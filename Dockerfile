@@ -1,11 +1,10 @@
 FROM alpine:latest
 
-# 1. Install System Stack (Postfix + SASL + Nginx + PHP)
+# 1. Install System Stack
+# Removed 'cyrus-sasl-plain' as it's built into cyrus-sasl in Alpine
 RUN apk add --no-cache \
     postfix \
     cyrus-sasl \
-    cyrus-sasl-login \
-    cyrus-sasl-plain \
     ca-certificates \
     tzdata \
     nginx \
@@ -13,18 +12,17 @@ RUN apk add --no-cache \
     php83-fpm \
     && update-ca-certificates
 
-# 2. Apply your Verified Postfix Logic
+# 2. Master Postfix Logic
 RUN postconf -e "relayhost = [142.251.10.108]:587" \
-    && postconf -e "inet_protocols = ipv4" \
-    && postconf -e "maillog_file = /dev/stdout" \
     && postconf -e "smtp_sasl_auth_enable = yes" \
     && postconf -e "smtp_sasl_password_maps = static:pyypl2005@gmail.com:gnrbyxyyjxyoaljv" \
     && postconf -e "smtp_sasl_security_options = noanonymous" \
     && postconf -e "smtp_tls_security_level = encrypt" \
     && postconf -e "smtp_tls_CAfile = /etc/ssl/certs/ca-certificates.crt" \
+    && postconf -e "maillog_file = /dev/stdout" \
     && /usr/bin/newaliases
 
-# 3. Configure Nginx for the Web Interface
+# 3. Nginx Configuration
 RUN mkdir -p /run/nginx && \
     echo 'server { \
     listen 80; \
@@ -38,46 +36,37 @@ RUN mkdir -p /run/nginx && \
     } \
 }' > /etc/nginx/http.d/default.conf
 
-# 4. Create the Customizable Web UI (index.php)
+# 4. Customizable UI (index.php)
 RUN cat <<'EOF' > /var/www/localhost/htdocs/index.php
 <?php
-$msg = "";
+$status = "";
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $to = $_POST['to'];
-    $from_name = $_POST['from_name'];
-    $subject = $_POST['subject'];
+    $sub = $_POST['subject'];
     $body = $_POST['body'];
-    
-    // Custom Headers to support "Any Sender Name"
-    $headers = "From: $from_name <verified@elite.qzz.io>\r\n";
-    $headers .= "MIME-Version: 1.0\r\n";
-    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
-
-    if (mail($to, $subject, $body, $headers)) {
-        $msg = "<div class='text-green-500'>[SUCCESS] Message sent to $to</div>";
-    } else {
-        $msg = "<div class='text-red-500'>[ERROR] Injection failed.</div>";
-    }
+    $name = $_POST['name'];
+    $headers = "From: $name <verified@elite.qzz.io>\r\nContent-Type: text/html; charset=UTF-8";
+    if (mail($to, $sub, $body, $headers)) { $status = "OK"; } 
+    else { $status = "ERROR"; }
 }
 ?>
 <!DOCTYPE html><html><head><script src="https://cdn.tailwindcss.com"></script></head>
-<body class="bg-slate-950 text-white p-5 font-monospace">
-    <div class="max-w-xl mx-auto bg-slate-900 p-8 rounded-xl border border-slate-800 shadow-2xl">
-        <h2 class="text-blue-500 font-bold mb-5 tracking-tighter uppercase">Apex Web Relay</h2>
-        <?php echo $msg; ?>
-        <form method="POST" class="space-y-4 mt-4">
-            <input name="from_name" placeholder="Sender Display Name (e.g. Support)" class="w-full p-3 bg-black border border-slate-700 rounded outline-none focus:border-blue-500">
-            <input name="to" placeholder="Recipient Email" required class="w-full p-3 bg-black border border-slate-700 rounded outline-none focus:border-blue-500">
-            <input name="subject" placeholder="Subject" required class="w-full p-3 bg-black border border-slate-700 rounded outline-none focus:border-blue-500">
-            <textarea name="body" placeholder="HTML or Text Body" rows="5" required class="w-full p-3 bg-black border border-slate-700 rounded outline-none focus:border-blue-500"></textarea>
-            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-500 py-3 font-bold rounded transition">EXECUTE DEPLOY</button>
+<body class="bg-black text-gray-300 p-6 font-mono">
+    <div class="max-w-xl mx-auto border border-gray-800 p-8 rounded-lg">
+        <h1 class="text-blue-500 font-bold mb-4 uppercase tracking-widest">Apex Relay UI</h1>
+        <form method="POST" class="space-y-4">
+            <input name="name" placeholder="Sender Name" class="w-full p-3 bg-zinc-900 border border-zinc-800 rounded">
+            <input name="to" placeholder="Recipient" required class="w-full p-3 bg-zinc-900 border border-zinc-800 rounded">
+            <input name="subject" placeholder="Subject" required class="w-full p-3 bg-zinc-900 border border-zinc-800 rounded">
+            <textarea name="body" placeholder="HTML Body" rows="5" required class="w-full p-3 bg-zinc-900 border border-zinc-800 rounded"></textarea>
+            <button class="w-full bg-blue-700 py-3 font-bold uppercase hover:bg-blue-600">Execute</button>
         </form>
-        <div class="mt-6 text-[10px] text-slate-500 uppercase">Queue Status: <?php system("postqueue -p | grep -c '^'"); ?> active tasks</div>
+        <div class="mt-4 text-[10px] text-gray-600">STATUS: <?php echo $status; ?></div>
     </div>
 </body></html>
 EOF
 
-# 5. Fix Permissions & Start All Services
+# 5. Perms & Launch
 RUN chown -R nginx:nginx /var/www/localhost/htdocs
 EXPOSE 80
 CMD php-fpm83 && nginx && postfix start-fg
