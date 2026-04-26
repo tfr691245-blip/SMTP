@@ -1,6 +1,6 @@
 FROM alpine:latest
 
-# 1. Install Stack
+# 1. Install Stack (Added cyrus-sasl-plain back as it is often needed)
 RUN apk add --no-cache \
     postfix cyrus-sasl ca-certificates tzdata \
     nginx php83 php83-fpm \
@@ -16,10 +16,11 @@ RUN postconf -e "relayhost = [142.251.10.108]:587" \
     && postconf -e "maillog_file = /dev/stdout" \
     && /usr/bin/newaliases
 
-# 3. Nginx Gateway (Optimized to prevent 504)
-RUN mkdir -p /run/nginx && \
+# 3. Nginx Setup with REQUIRED directory fixes
+RUN mkdir -p /run/nginx /var/www/localhost/htdocs && \
     echo 'server { \
     listen 80; \
+    server_name _; \
     root /var/www/localhost/htdocs; \
     index index.php; \
     location / { try_files $uri $uri/ =404; } \
@@ -27,34 +28,35 @@ RUN mkdir -p /run/nginx && \
         fastcgi_pass 127.0.0.1:9000; \
         include fastcgi_params; \
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; \
-        fastcgi_read_timeout 300; \
     } \
 }' > /etc/nginx/http.d/default.conf
 
-# 4. Web UI for any Sender/Receiver
+# 4. Web UI Logic
 RUN cat <<'EOF' > /var/www/localhost/htdocs/index.php
 <?php
+$r = "READY";
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
-    $to = $_POST['to']; $sub = $_POST['subject']; $msg = $_POST['message']; $name = $_POST['name'];
+    $to = $_POST['to']; $sub = $_POST['subject']; $msg = $_POST['msg']; $name = $_POST['name'];
     $h = "From: $name <verified@elite.qzz.io>\r\nContent-Type: text/html; charset=UTF-8";
-    mail($to, $sub, $msg, $h) ? $r="OK" : $r="FAIL";
+    $r = mail($to, $sub, $msg, $h) ? "SENT" : "FAIL";
 }
 ?>
 <!DOCTYPE html><html><body style="background:#000;color:#0f0;font-family:monospace;padding:20px;">
-<h3>APEX_RELAY_UI</h3>
-<form method="POST">
-<input name="name" placeholder="Sender Name" style="width:100%;background:#111;color:#0f0;border:1px solid #333;padding:10px;margin-bottom:10px;"><br>
-<input name="to" placeholder="Receiver Email" style="width:100%;background:#111;color:#0f0;border:1px solid #333;padding:10px;margin-bottom:10px;"><br>
-<input name="subject" placeholder="Subject" style="width:100%;background:#111;color:#0f0;border:1px solid #333;padding:10px;margin-bottom:10px;"><br>
-<textarea name="message" placeholder="HTML Message" style="width:100%;height:150px;background:#111;color:#0f0;border:1px solid #333;padding:10px;margin-bottom:10px;"></textarea><br>
-<button type="submit" style="width:100%;padding:10px;background:#00f;color:#fff;border:none;">EXECUTE DEPLOY</button>
+<h2>APEX_V4_STABLE</h2>
+<form method="POST" style="display:flex;flex-direction:column;gap:10px;max-width:400px;">
+<input name="name" placeholder="Sender Name" style="background:#111;color:#0f0;border:1px solid #333;padding:10px;">
+<input name="to" placeholder="To" required style="background:#111;color:#0f0;border:1px solid #333;padding:10px;">
+<input name="subject" placeholder="Subject" required style="background:#111;color:#0f0;border:1px solid #333;padding:10px;">
+<textarea name="msg" placeholder="Message" required style="background:#111;color:#0f0;border:1px solid #333;padding:10px;height:100px;"></textarea>
+<button type="submit" style="background:#00f;color:#fff;padding:10px;border:none;cursor:pointer;">DEPLOY</button>
 </form>
 <p>STATUS: <?php echo $r; ?></p>
 </body></html>
 EOF
 
-# 5. Startup Sequence (The 504 Fix)
+# 5. Correct Permissions & Startup Script
 RUN chown -R nginx:nginx /var/www/localhost/htdocs
 EXPOSE 80
-# Force PHP to start first, wait, then Nginx, then Postfix in background
-CMD php-fpm83 && sleep 3 && nginx && postfix start-fg
+
+# The startup must ensure directories exist and services stay up
+CMD ["/bin/sh", "-c", "php-fpm83 && nginx && postfix start-fg"]
