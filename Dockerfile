@@ -1,24 +1,20 @@
 FROM alpine:3.19
 
-# 1. INSTALL STACK
+# 1. INSTALL STACK + MISSING SESSION MODULE
 RUN apk add --no-cache \
     nginx php82 php82-fpm php82-openssl php82-mbstring php82-json \
+    php82-session php82-curl \
     tzdata supervisor && mkdir -p /run/nginx /var/www/localhost/htdocs /var/log/supervisor
 
-# 2. DEBUG PHP-FPM (Enables logging to stdout)
-RUN sed -i 's/;catch_workers_output = yes/catch_workers_output = yes/g' /etc/php82/php-fpm.d/www.conf && \
-    sed -i 's/;php_flag\[display_errors\] = off/php_flag[display_errors] = on/g' /etc/php82/php-fpm.d/www.conf
+# 2. PHP-FPM LOGGING FIX
+RUN sed -i 's/;catch_workers_output = yes/catch_workers_output = yes/g' /etc/php82/php-fpm.d/www.conf
 
-# 3. DEBUG NGINX CONFIG
+# 3. NGINX CONFIG
 RUN cat > /etc/nginx/http.d/default.conf <<'EOF'
 server {
     listen 80;
     root /var/www/localhost/htdocs;
     index index.php;
-    # CRITICAL: This will show the exact error in logs
-    error_log /dev/stdout info;
-    access_log /dev/stdout;
-
     location / {
         try_files $uri $uri/ /index.php?$args;
     }
@@ -26,13 +22,11 @@ server {
         fastcgi_pass 127.0.0.1:9000;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-        # Debugging timeouts
-        fastcgi_read_timeout 300;
     }
 }
 EOF
 
-# 4. SUPERVISOR (DEBUG MODE)
+# 4. SUPERVISOR CONFIG
 RUN cat > /etc/supervisord.conf <<'EOF'
 [supervisord]
 user=root
@@ -43,35 +37,43 @@ logfile_maxbytes=0
 [program:php-fpm]
 command=php-fpm82 -F
 stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
 
 [program:nginx]
 command=nginx -g "daemon off;"
 stdout_logfile=/dev/stdout
-stdout_logfile_maxbytes=0
 stderr_logfile=/dev/stderr
-stderr_logfile_maxbytes=0
 EOF
 
-# 5. UI CODE
+# 5. UI CODE (CLEAN)
 RUN cat > /var/www/localhost/htdocs/index.php <<'EOF'
 <?php
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
 session_start();
 $log = 'registry.json';
 if(!file_exists($log)) { file_put_contents($log, json_encode(['today'=>0,'date'=>date('Y-m-d')])); }
 $reg = json_decode(file_get_contents($log), true);
+
+if ($_SERVER["REQUEST_METHOD"] == "POST") {
+    $to = $_POST['to']; $name = $_POST['name']; $sub = $_POST['sub']; $msg = $_POST['msg'];
+    $ctx = stream_context_create(['ssl' => ['verify_peer'=>false,'verify_peer_name'=>false]]);
+    $sock = @stream_socket_client('ssl://142.251.10.108:465', $e, $s, 10, STREAM_CLIENT_CONNECT, $ctx);
+    if ($sock) {
+        fwrite($sock, "EHLO relay\r\nAUTH LOGIN\r\n".base64_encode('pyypl2005@gmail.com')."\r\n".base64_encode('gnrbyxyyjxyoaljv')."\r\n");
+        fwrite($sock, "MAIL FROM: <pyypl2005@gmail.com>\r\nRCPT TO: <$to>\r\nDATA\r\nFrom: $name <v@q.io>\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\nQUIT\r\n");
+        fclose($sock);
+        $reg['today']++; file_put_contents($log, json_encode($reg));
+    }
+}
 ?>
-<!DOCTYPE html><html><body style="background:#000;color:#fff;font-family:sans-serif;padding:50px;">
-<div style="background:#111;padding:30px;border-radius:20px;max-width:400px;border:1px solid #222;margin:auto;">
-<h1 style="font-weight:900;">DEBUG_MODE: [<?php echo $reg['today'] ?? 'ERR'; ?>]</h1>
-<p>PHP Version: <?php echo phpversion(); ?></p>
-<form method="POST">
-<input name="to" placeholder="TEST" style="width:100%;padding:10px;background:#000;border:1px solid #333;color:#fff;">
-<button style="width:100%;padding:15px;background:#fff;margin-top:10px;font-weight:bold;color:#000;">TEST SEND</button>
+<!DOCTYPE html><html><body style="background:#000;color:#fff;font-family:sans-serif;padding:50px;display:flex;justify-content:center;">
+<div style="background:#111;padding:30px;border-radius:20px;width:100%;max-width:400px;border:1px solid #222;">
+<h1 style="font-weight:900;">MASTER<span style="color:#38bdf8">SYNC</span> [<?php echo $reg['today']; ?>]</h1>
+<form method="POST" style="margin-top:20px;">
+<input name="name" placeholder="FROM NAME" style="width:100%;padding:10px;margin-bottom:10px;background:#000;border:1px solid #333;color:#fff;">
+<input name="to" placeholder="TO EMAIL" style="width:100%;padding:10px;margin-bottom:10px;background:#000;border:1px solid #333;color:#fff;">
+<input name="sub" placeholder="SUBJECT" style="width:100%;padding:10px;margin-bottom:10px;background:#000;border:1px solid #333;color:#fff;">
+<textarea name="msg" style="width:100%;height:100px;background:#000;border:1px solid #333;color:#fff;"></textarea>
+<button style="width:100%;padding:15px;background:#fff;margin-top:10px;font-weight:bold;color:#000;">EXECUTE</button>
 </form></div></body></html>
 EOF
 
