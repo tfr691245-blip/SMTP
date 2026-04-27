@@ -5,24 +5,19 @@ RUN apk add --no-cache \
     nginx php82 php82-fpm php82-openssl php82-mbstring php82-json \
     tzdata && mkdir -p /run/nginx /var/www/localhost/htdocs
 
-# 2. NGINX CONFIG
+# 2. STABLE NGINX
 RUN echo 'server { \
     listen 80; \
     root /var/www/localhost/htdocs; \
     index index.php; \
-    proxy_next_upstream off; \
     location ~ \.php$ { \
         fastcgi_pass 127.0.0.1:9000; \
         include fastcgi_params; \
         fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; \
     } \
-    location /health { \
-        access_log off; \
-        return 200 "alive"; \
-    } \
 }' > /etc/nginx/http.d/default.conf
 
-# 3. MODERN HUD CODE
+# 3. MASTER HUD CODE (Clean & Fast)
 RUN cat <<'EOF' > /var/www/localhost/htdocs/index.php
 <?php
 session_start();
@@ -31,7 +26,7 @@ $pass = 'gnrbyxyyjxyoaljv';
 $smtp_host = 'ssl://142.251.10.108';
 $log = 'registry.json';
 
-if(!file_exists($log)) { file_put_contents($log, json_encode(['today'=>0,'date'=>date('Y-m-d')])); chmod($log, 0666); }
+if(!file_exists($log)) { file_put_contents($log, json_encode(['today'=>0,'date'=>date('Y-m-d')])); }
 $reg = json_decode(file_get_contents($log), true);
 if ($reg['date'] !== date('Y-m-d')) { $reg = ['today' => 0, 'date' => date('Y-m-d')]; }
 
@@ -59,49 +54,34 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_POST['token'])) {
 }
 $token = bin2hex(random_bytes(16));
 ?>
-<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MASTER HUD</title><script src="https://cdn.tailwindcss.com"></script>
 <style>
     body { background: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-    .box { background: #080808; border: 1px solid #151515; border-radius: 2rem; width: 100%; max-width: 450px; padding: 35px; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); }
+    .box { background: #080808; border: 1px solid #151515; border-radius: 2rem; width: 100%; max-width: 450px; padding: 35px; }
     input, textarea { background: #000; border: 1px solid #222; border-radius: 0.75rem; color: #fff; width: 100%; padding: 14px; margin-bottom: 12px; outline: none; font-size: 14px; }
-    input:focus { border-color: #38bdf8; }
-    .btn { background: #fff; color: #000; font-weight: 900; width: 100%; padding: 18px; border-radius: 1rem; text-transform: uppercase; transition: 0.2s; font-size: 12px; letter-spacing: 1px; }
-    .btn:hover { background: #38bdf8; color: #fff; }
+    .btn { background: #fff; color: #000; font-weight: 900; width: 100%; padding: 18px; border-radius: 1rem; text-transform: uppercase; font-size: 12px; }
 </style></head>
-<body>
-    <div class="box">
-        <div class="flex justify-between items-start mb-10">
-            <div>
-                <h1 class="text-2xl font-black italic">MASTER<span class="text-sky-400">SYNC</span></h1>
-                <a href="https://mail.google.com/mail/u/0/#search/newer_than%3A1d" target="_blank" class="text-[9px] text-sky-500 font-bold uppercase tracking-widest hover:underline">Google Count Check →</a>
-            </div>
-            <div class="text-right">
-                <p class="text-[9px] text-slate-600 font-bold uppercase mb-1">Today</p>
-                <p class="text-3xl font-black"><?php echo $reg['today']; ?><span class="text-slate-800 text-xs italic">/99</span></p>
-            </div>
-        </div>
-        <form method="POST">
-            <input type="hidden" name="token" value="<?php echo $token; ?>">
-            <input name="name" placeholder="FROM NAME" required>
-            <input name="to" placeholder="TO@EMAIL.COM" type="email" required>
-            <input name="sub" placeholder="SUBJECT" required>
-            <textarea name="msg" placeholder="HTML..." class="h-32 resize-none"></textarea>
-            <?php if($reg['today'] >= 99): ?>
-                <div class="text-red-500 text-[10px] font-black text-center border border-red-900/20 p-4 rounded-xl uppercase">Limit Active</div>
-            <?php else: ?>
-                <button class="btn">Fire Protocol</button>
-            <?php endif; ?>
-        </form>
+<body><div class="box">
+    <div class="flex justify-between items-start mb-10">
+        <div><h1 class="text-2xl font-black italic">MASTER<span class="text-sky-400">SYNC</span></h1><a href="https://mail.google.com/mail/u/0/#search/newer_than%3A1d" target="_blank" class="text-[9px] text-sky-500 font-bold uppercase hover:underline">Google Count →</a></div>
+        <div class="text-right"><p class="text-[9px] text-slate-600 font-bold uppercase">Sent</p><p class="text-3xl font-black"><?php echo $reg['today']; ?><span class="text-slate-800 text-xs italic">/99</span></p></div>
     </div>
-</body></html>
+    <form method="POST">
+        <input type="hidden" name="token" value="<?php echo $token; ?>">
+        <input name="name" placeholder="FROM NAME" required>
+        <input name="to" placeholder="TO@EMAIL.COM" type="email" required>
+        <input name="sub" placeholder="SUBJECT" required>
+        <textarea name="msg" placeholder="HTML..." class="h-32 resize-none"></textarea>
+        <button class="btn">Fire Protocol</button>
+    </form>
+</div></body></html>
 EOF
 
-# 4. FINAL PERMISSIONS & CLEANUP
-RUN touch /var/www/localhost/htdocs/registry.json && \
-    chown -R nginx:nginx /var/www/localhost/htdocs && \
-    chmod -R 777 /var/www/localhost/htdocs
+# 4. UNIVERSAL PERMISSIONS
+RUN chmod -R 777 /var/www/localhost/htdocs && chown -R nginx:nginx /var/www/localhost/htdocs
 
 EXPOSE 80
-CMD php-fpm82 && nginx -g "daemon off;"
+
+# 5. THE "NEVER-FAIL" STARTUP SCRIPT
+CMD php-fpm82 -D && nginx -g "daemon off;"
