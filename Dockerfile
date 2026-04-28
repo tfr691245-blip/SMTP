@@ -38,7 +38,7 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 EOF
 
-# 3. APP LOGIC (Force TLS Handshake for Real Status)
+# 3. APP LOGIC (Real-Time Official Check)
 RUN cat > /var/www/localhost/htdocs/index.php <<'EOF'
 <?php
 session_start();
@@ -48,19 +48,20 @@ if(!file_exists($log)) { file_put_contents($log, json_encode(['today'=>0,'date'=
 $reg = json_decode(file_get_contents($log), true);
 if($reg['date'] != date('Y-m-d')) { $reg = ['today'=>0,'date'=>date('Y-m-d')]; }
 
-function talk($s, $m) { fwrite($s, $m."\r\n"); return fgets($s, 512); }
+function smtp_cmd($s, $c) { fwrite($s, $c."\r\n"); return fgets($s, 512); }
 
-function get_real_status() {
+function get_official_status() {
     $sock = @stream_socket_client('tcp://smtp.gmail.com:587', $e, $s, 3);
     if(!$sock) return 'OFFLINE';
     fgets($sock, 512);
-    talk($sock, "EHLO gmail.com");
-    talk($sock, "STARTTLS");
-    stream_socket_enable_crypto($sock, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-    talk($sock, "EHLO gmail.com");
-    talk($sock, "AUTH LOGIN");
-    talk($sock, base64_encode('pyypl2005@gmail.com'));
-    $res = talk($sock, base64_encode('gnrbyxyyjxyoaljv'));
+    smtp_cmd($sock, "EHLO smtp.gmail.com");
+    smtp_cmd($sock, "STARTTLS");
+    if(!@stream_socket_enable_crypto($sock, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($sock); return 'TLS_ERR'; }
+    smtp_cmd($sock, "EHLO smtp.gmail.com");
+    smtp_cmd($sock, "AUTH LOGIN");
+    smtp_cmd($sock, base64_encode('pyypl2005@gmail.com'));
+    $res = smtp_cmd($sock, base64_encode('gnrbyxyyjxyoaljv'));
+    smtp_cmd($sock, "QUIT");
     fclose($sock);
     if(strpos($res, '235') !== false) return 'READY';
     if(strpos($res, '454') !== false || strpos($res, '554') !== false) return 'LIMITED';
@@ -69,7 +70,7 @@ function get_real_status() {
 
 if(isset($_GET['status'])) {
     header('Content-Type: application/json');
-    $st = get_real_status();
+    $st = get_official_status();
     echo json_encode(['status' => $st, 'rem' => ($st == 'READY' ? ($max - $reg['today']) : 0)]); exit;
 }
 
@@ -78,17 +79,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     $to=$_POST['to']; $name=$_POST['name']; $sub=$_POST['sub']; $msg=$_POST['msg'];
     $sock = @stream_socket_client('tcp://smtp.gmail.com:587', $e, $s, 5);
     if($sock) {
-        fgets($sock, 512); talk($sock, "EHLO gmail.com"); talk($sock, "STARTTLS");
+        fgets($sock, 512); smtp_cmd($sock, "EHLO smtp.gmail.com"); smtp_cmd($sock, "STARTTLS");
         stream_socket_enable_crypto($sock, true, STREAM_CRYPTO_METHOD_TLS_CLIENT);
-        talk($sock, "EHLO gmail.com"); talk($sock, "AUTH LOGIN");
-        talk($sock, base64_encode('pyypl2005@gmail.com'));
-        $auth = talk($sock, base64_encode('gnrbyxyyjxyoaljv'));
+        smtp_cmd($sock, "EHLO smtp.gmail.com"); smtp_cmd($sock, "AUTH LOGIN");
+        smtp_cmd($sock, base64_encode('pyypl2005@gmail.com'));
+        $auth = smtp_cmd($sock, base64_encode('gnrbyxyyjxyoaljv'));
         if(strpos($auth, '235') !== false) {
-            talk($sock, "MAIL FROM: <pyypl2005@gmail.com>");
-            talk($sock, "RCPT TO: <$to>");
-            talk($sock, "DATA");
-            fwrite($sock, "From: $name <v@q.io>\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\n");
-            talk($sock, "QUIT");
+            smtp_cmd($sock, "MAIL FROM: <pyypl2005@gmail.com>");
+            smtp_cmd($sock, "RCPT TO: <$to>");
+            smtp_cmd($sock, "DATA");
+            fwrite($sock, "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\n");
+            smtp_cmd($sock, "QUIT");
             $reg['today']++; file_put_contents($log, json_encode($reg));
             echo json_encode(['status'=>'success']);
         } else { echo json_encode(['status'=>'error', 'msg'=>'AUTH REJECTED']); }
@@ -121,7 +122,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
             <div class="badge" id="stat">SYNCING...</div>
         </div>
         <form id="f">
-            <input type="text" name="name" placeholder="SENDER NAME" required>
+            <input type="text" name="name" placeholder="SENDER" required>
             <input type="email" name="to" placeholder="RECIPIENT" required>
             <input type="text" name="sub" placeholder="SUBJECT" required>
             <textarea name="msg" placeholder="HTML PAYLOAD" rows="5" required></textarea>
@@ -137,7 +138,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
             s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
         }
         f.onsubmit = async (e) => {
-            e.preventDefault(); b.disabled = true; b.innerText = 'WAIT...';
+            e.preventDefault(); b.disabled = true; b.innerText = 'SENDING...';
             const res = await fetch('?ajax=1', { method: 'POST', body: new FormData(f) });
             const d = await res.json();
             if(d.status === 'success') { show('SENT', '#22c55e'); f.reset(); check(); } 
