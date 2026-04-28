@@ -1,12 +1,12 @@
 FROM alpine:3.19
 
-# 1. SYSTEM
+# 1. CORE
 RUN apk add --no-cache \
     nginx php82 php82-fpm php82-openssl php82-mbstring php82-json \
     php82-session php82-curl \
     tzdata supervisor && mkdir -p /run/nginx /var/www/localhost/htdocs /var/log/supervisor
 
-# 2. CONFIGS
+# 2. ENVIRONMENT
 RUN sed -i 's/;catch_workers_output = yes/catch_workers_output = yes/g' /etc/php82/php-fpm.d/www.conf
 RUN cat > /etc/nginx/http.d/default.conf <<'EOF'
 server {
@@ -38,16 +38,14 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 EOF
 
-# 3. APP (Strict 24h Telemetry + SSL Handshake)
+# 3. APP (Used/Limit Tracking)
 RUN cat > /var/www/localhost/htdocs/index.php <<'EOF'
 <?php
 session_start();
 $log = 'registry.json';
-$max = 99;
+$limit = 99;
 if(!file_exists($log)) { file_put_contents($log, json_encode(['used'=>0,'ts'=>time()])); }
 $reg = json_decode(file_get_contents($log), true);
-
-// STRICT NEWER_THAN:1D LOGIC (24H Reset)
 if(time() - $reg['ts'] > 86400) { $reg = ['used'=>0,'ts'=>time()]; }
 
 function get_auth() {
@@ -68,7 +66,7 @@ function get_auth() {
 if(isset($_GET['status'])) {
     header('Content-Type: application/json');
     $st = get_auth();
-    echo json_encode(['status'=>$st, 'rem'=>($st=='READY' ? ($max - $reg['used']) : 0)]); exit;
+    echo json_encode(['status'=>$st, 'used'=>$reg['used'], 'limit'=>$limit]); exit;
 }
 
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
@@ -86,7 +84,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
             fwrite($sock, "MAIL FROM: <pyypl2005@gmail.com>\r\n"); fgets($sock, 512);
             fwrite($sock, "RCPT TO: <$to>\r\n"); fgets($sock, 512);
             fwrite($sock, "DATA\r\n"); fgets($sock, 512);
-            fwrite($sock, "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\nQUIT\r\n");
+            $head = "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
+            fwrite($sock, $head . $msg . "\r\n.\r\nQUIT\r\n");
             $reg['used']++; file_put_contents($log, json_encode($reg));
             echo json_encode(['status'=>'success']);
         } else { echo json_encode(['status'=>'error','msg'=>'DENIED']); }
@@ -102,9 +101,9 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     <title>MASTERSYNC</title>
     <style>
         body { background: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
-        .card { width: 90%; max-width: 380px; background: #080808; padding: 25px; border-radius: 20px; border: 1px solid #111; }
+        .card { width: 90%; max-width: 380px; background: #080808; padding: 25px; border-radius: 20px; border: 1px solid #1a1a1a; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .badge { font-size: 10px; padding: 5px 12px; border-radius: 6px; font-weight: 800; border: 1px solid #38bdf8; color: #38bdf8; }
+        .badge { font-size: 11px; padding: 6px 14px; border-radius: 8px; font-weight: 900; border: 1px solid #38bdf8; color: #38bdf8; letter-spacing: 0.5px; }
         input, textarea { width: 100%; padding: 14px; margin-bottom: 12px; background: #111; border: 1px solid #222; border-radius: 12px; color: #fff; font-size: 15px; outline: none; }
         button { width: 100%; padding: 16px; background: #fff; color: #000; border: none; border-radius: 12px; font-weight: 900; cursor: pointer; }
         #tst { position: fixed; top: 15px; padding: 12px; border-radius: 8px; display: none; font-weight: bold; }
@@ -115,7 +114,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     <div class="card">
         <div class="header">
             <h3 style="margin:0;font-size:18px;">MASTERSYNC</h3>
-            <div class="badge" id="stat">SYNCING...</div>
+            <div class="badge" id="stat">0/99</div>
         </div>
         <form id="f">
             <input type="text" name="name" placeholder="SENDER" required>
@@ -128,10 +127,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     <script>
         const f=document.getElementById('f'), b=document.getElementById('b'), s=document.getElementById('stat'), t=document.getElementById('tst');
         async function check() {
-            const res = await fetch('?status=1');
-            const d = await res.json();
-            s.innerText = d.status + ': ' + d.rem;
-            s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
+            try {
+                const res = await fetch('?status=1');
+                const d = await res.json();
+                s.innerText = d.used + '/' + d.limit;
+                s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
+            } catch(e) { s.innerText = 'ERR'; }
         }
         f.onsubmit = async (e) => {
             e.preventDefault(); b.disabled = true; b.innerText = 'WAIT...';
