@@ -1,12 +1,12 @@
 FROM alpine:3.19
 
-# 1. SYSTEM INSTALL
+# 1. SYSTEM
 RUN apk add --no-cache \
     nginx php82 php82-fpm php82-openssl php82-mbstring php82-json \
     php82-session php82-curl \
     tzdata supervisor && mkdir -p /run/nginx /var/www/localhost/htdocs /var/log/supervisor
 
-# 2. SERVER CONFIGS
+# 2. CONFIGS
 RUN sed -i 's/;catch_workers_output = yes/catch_workers_output = yes/g' /etc/php82/php-fpm.d/www.conf
 RUN cat > /etc/nginx/http.d/default.conf <<'EOF'
 server {
@@ -38,44 +38,37 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 EOF
 
-# 3. APP LOGIC (Force Direct SSL Handshake)
+# 3. APP (Strict 24h Telemetry + SSL Handshake)
 RUN cat > /var/www/localhost/htdocs/index.php <<'EOF'
 <?php
 session_start();
 $log = 'registry.json';
 $max = 99;
-if(!file_exists($log)) { file_put_contents($log, json_encode(['today'=>0,'date'=>date('Y-m-d')])); }
+if(!file_exists($log)) { file_put_contents($log, json_encode(['used'=>0,'ts'=>time()])); }
 $reg = json_decode(file_get_contents($log), true);
-if($reg['date'] != date('Y-m-d')) { $reg = ['today'=>0,'date'=>date('Y-m-d')]; }
 
-function get_google_auth() {
+// STRICT NEWER_THAN:1D LOGIC (24H Reset)
+if(time() - $reg['ts'] > 86400) { $reg = ['used'=>0,'ts'=>time()]; }
+
+function get_auth() {
     $ctx = stream_context_create(['ssl'=>['verify_peer'=>false,'verify_peer_name'=>false]]);
     $sock = @stream_socket_client('ssl://smtp.gmail.com:465', $e, $s, 4, STREAM_CLIENT_CONNECT, $ctx);
     if(!$sock) return 'OFFLINE';
-    
-    fgets($sock, 512); // Banner
+    fgets($sock, 512); 
     fwrite($sock, "EHLO gmail.com\r\n");
     while($line = fgets($sock, 512)) { if(substr($line,3,1) == ' ') break; }
-    
-    fwrite($sock, "AUTH LOGIN\r\n");
-    fgets($sock, 512);
-    fwrite($sock, base64_encode('pyypl2005@gmail.com')."\r\n");
-    fgets($sock, 512);
+    fwrite($sock, "AUTH LOGIN\r\n"); fgets($sock, 512);
+    fwrite($sock, base64_encode('pyypl2005@gmail.com')."\r\n"); fgets($sock, 512);
     fwrite($sock, base64_encode('gnrbyxyyjxyoaljv')."\r\n");
     $res = fgets($sock, 512);
-    
-    fwrite($sock, "QUIT\r\n");
-    fclose($sock);
-    
-    if(strpos($res, '235') !== false) return 'READY';
-    if(strpos($res, '454') !== false || strpos($res, '554') !== false) return 'LIMITED';
-    return 'AUTH_FAIL';
+    fwrite($sock, "QUIT\r\n"); fclose($sock);
+    return (strpos($res, '235') !== false) ? 'READY' : 'AUTH_FAIL';
 }
 
 if(isset($_GET['status'])) {
     header('Content-Type: application/json');
-    $st = get_google_auth();
-    echo json_encode(['status' => $st, 'rem' => ($st == 'READY' ? ($max - $reg['today']) : 0)]); exit;
+    $st = get_auth();
+    echo json_encode(['status'=>$st, 'rem'=>($st=='READY' ? ($max - $reg['used']) : 0)]); exit;
 }
 
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
@@ -83,29 +76,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     $to=$_POST['to']; $name=$_POST['name']; $sub=$_POST['sub']; $msg=$_POST['msg'];
     $ctx = stream_context_create(['ssl'=>['verify_peer'=>false,'verify_peer_name'=>false]]);
     $sock = @stream_socket_client('ssl://smtp.gmail.com:465', $e, $s, 5, STREAM_CLIENT_CONNECT, $ctx);
-    
     if($sock) {
-        fgets($sock, 512);
-        fwrite($sock, "EHLO gmail.com\r\n");
+        fgets($sock, 512); fwrite($sock, "EHLO gmail.com\r\n");
         while($line = fgets($sock, 512)) { if(substr($line,3,1) == ' ') break; }
         fwrite($sock, "AUTH LOGIN\r\n"); fgets($sock, 512);
         fwrite($sock, base64_encode('pyypl2005@gmail.com')."\r\n"); fgets($sock, 512);
         fwrite($sock, base64_encode('gnrbyxyyjxyoaljv')."\r\n");
-        $auth = fgets($sock, 512);
-        
-        if(strpos($auth, '235') !== false) {
+        if(strpos(fgets($sock, 512), '235') !== false) {
             fwrite($sock, "MAIL FROM: <pyypl2005@gmail.com>\r\n"); fgets($sock, 512);
             fwrite($sock, "RCPT TO: <$to>\r\n"); fgets($sock, 512);
             fwrite($sock, "DATA\r\n"); fgets($sock, 512);
-            fwrite($sock, "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\n");
-            fgets($sock, 512);
-            fwrite($sock, "QUIT\r\n");
-            $reg['today']++; file_put_contents($log, json_encode($reg));
+            fwrite($sock, "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\nQUIT\r\n");
+            $reg['used']++; file_put_contents($log, json_encode($reg));
             echo json_encode(['status'=>'success']);
-        } else { echo json_encode(['status'=>'error', 'msg'=>'GOOGLE_DENIED']); }
+        } else { echo json_encode(['status'=>'error','msg'=>'DENIED']); }
         fclose($sock);
-    } else { echo json_encode(['status'=>'error', 'msg'=>'CONN_FAIL']); }
-    exit;
+    } exit;
 }
 ?>
 <!DOCTYPE html>
@@ -142,12 +128,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     <script>
         const f=document.getElementById('f'), b=document.getElementById('b'), s=document.getElementById('stat'), t=document.getElementById('tst');
         async function check() {
-            try {
-                const res = await fetch('?status=1');
-                const d = await res.json();
-                s.innerText = d.status + ': ' + d.rem;
-                s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
-            } catch(e) { s.innerText = 'OFFLINE'; }
+            const res = await fetch('?status=1');
+            const d = await res.json();
+            s.innerText = d.status + ': ' + d.rem;
+            s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
         }
         f.onsubmit = async (e) => {
             e.preventDefault(); b.disabled = true; b.innerText = 'WAIT...';
