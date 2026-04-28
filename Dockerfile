@@ -1,12 +1,12 @@
 FROM alpine:3.19
 
-# 1. CORE
+# 1. INSTALL
 RUN apk add --no-cache \
     nginx php82 php82-fpm php82-openssl php82-mbstring php82-json \
     php82-session php82-curl \
     tzdata supervisor && mkdir -p /run/nginx /var/www/localhost/htdocs /var/log/supervisor
 
-# 2. ENVIRONMENT
+# 2. CONFIGS
 RUN sed -i 's/;catch_workers_output = yes/catch_workers_output = yes/g' /etc/php82/php-fpm.d/www.conf
 RUN cat > /etc/nginx/http.d/default.conf <<'EOF'
 server {
@@ -38,11 +38,10 @@ stdout_logfile=/dev/stdout
 stdout_logfile_maxbytes=0
 EOF
 
-# 3. APP (Used/Limit Tracking)
+# 3. APP (Used / Limit Logic)
 RUN cat > /var/www/localhost/htdocs/index.php <<'EOF'
 <?php
-session_start();
-$log = 'registry.json';
+$log = '/tmp/registry.json';
 $limit = 99;
 if(!file_exists($log)) { file_put_contents($log, json_encode(['used'=>0,'ts'=>time()])); }
 $reg = json_decode(file_get_contents($log), true);
@@ -52,8 +51,7 @@ function get_auth() {
     $ctx = stream_context_create(['ssl'=>['verify_peer'=>false,'verify_peer_name'=>false]]);
     $sock = @stream_socket_client('ssl://smtp.gmail.com:465', $e, $s, 4, STREAM_CLIENT_CONNECT, $ctx);
     if(!$sock) return 'OFFLINE';
-    fgets($sock, 512); 
-    fwrite($sock, "EHLO gmail.com\r\n");
+    fgets($sock, 512); fwrite($sock, "EHLO gmail.com\r\n");
     while($line = fgets($sock, 512)) { if(substr($line,3,1) == ' ') break; }
     fwrite($sock, "AUTH LOGIN\r\n"); fgets($sock, 512);
     fwrite($sock, base64_encode('pyypl2005@gmail.com')."\r\n"); fgets($sock, 512);
@@ -65,8 +63,7 @@ function get_auth() {
 
 if(isset($_GET['status'])) {
     header('Content-Type: application/json');
-    $st = get_auth();
-    echo json_encode(['status'=>$st, 'used'=>$reg['used'], 'limit'=>$limit]); exit;
+    echo json_encode(['status'=>get_auth(), 'used'=>$reg['used'], 'limit'=>$limit]); exit;
 }
 
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
@@ -84,8 +81,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
             fwrite($sock, "MAIL FROM: <pyypl2005@gmail.com>\r\n"); fgets($sock, 512);
             fwrite($sock, "RCPT TO: <$to>\r\n"); fgets($sock, 512);
             fwrite($sock, "DATA\r\n"); fgets($sock, 512);
-            $head = "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n";
-            fwrite($sock, $head . $msg . "\r\n.\r\nQUIT\r\n");
+            fwrite($sock, "From: $name <v@q.io>\r\nTo: $to\r\nSubject: $sub\r\nMIME-Version: 1.0\r\nContent-Type: text/html\r\n\r\n$msg\r\n.\r\nQUIT\r\n");
             $reg['used']++; file_put_contents($log, json_encode($reg));
             echo json_encode(['status'=>'success']);
         } else { echo json_encode(['status'=>'error','msg'=>'DENIED']); }
@@ -103,7 +99,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
         body { background: #000; color: #fff; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
         .card { width: 90%; max-width: 380px; background: #080808; padding: 25px; border-radius: 20px; border: 1px solid #1a1a1a; }
         .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
-        .badge { font-size: 11px; padding: 6px 14px; border-radius: 8px; font-weight: 900; border: 1px solid #38bdf8; color: #38bdf8; letter-spacing: 0.5px; }
+        .badge { font-size: 11px; padding: 6px 14px; border-radius: 8px; font-weight: 900; border: 1px solid #38bdf8; color: #38bdf8; }
         input, textarea { width: 100%; padding: 14px; margin-bottom: 12px; background: #111; border: 1px solid #222; border-radius: 12px; color: #fff; font-size: 15px; outline: none; }
         button { width: 100%; padding: 16px; background: #fff; color: #000; border: none; border-radius: 12px; font-weight: 900; cursor: pointer; }
         #tst { position: fixed; top: 15px; padding: 12px; border-radius: 8px; display: none; font-weight: bold; }
@@ -114,7 +110,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
     <div class="card">
         <div class="header">
             <h3 style="margin:0;font-size:18px;">MASTERSYNC</h3>
-            <div class="badge" id="stat">0/99</div>
+            <div class="badge" id="stat">LOADING...</div>
         </div>
         <form id="f">
             <input type="text" name="name" placeholder="SENDER" required>
@@ -132,7 +128,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
                 const d = await res.json();
                 s.innerText = d.used + '/' + d.limit;
                 s.style.color = s.style.borderColor = (d.status==='READY') ? '#38bdf8' : '#ef4444';
-            } catch(e) { s.innerText = 'ERR'; }
+            } catch(e) { s.innerText = 'OFFLINE'; }
         }
         f.onsubmit = async (e) => {
             e.preventDefault(); b.disabled = true; b.innerText = 'WAIT...';
@@ -149,6 +145,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_GET['ajax'])) {
 </html>
 EOF
 
-RUN touch /var/www/localhost/htdocs/registry.json && chmod -R 777 /var/www/localhost/htdocs
+RUN chmod -R 777 /tmp
 EXPOSE 80
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisord.conf"]
